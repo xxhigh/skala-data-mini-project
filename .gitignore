@@ -1,6 +1,9 @@
 # 학습 원본 데이터
 data/archive
 
+# 문서 폴더
+docs/
+
 .DS_Store
 
 # Created by https://www.toptal.com/developers/gitignore/api/python
