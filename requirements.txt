@@ -1,0 +1,15 @@
+# Python 3.11 기준
+
+# 모델 학습 (src/)
+numpy==2.4.6
+pandas==3.0.3
+h5py==3.14.0
+scikit-learn==1.9.0
+
+# 그래프 (tests/check_valid_range.py, notebooks/)
+matplotlib==3.11.0
+
+# EDA 노트북 (notebooks/ESSHealth-scratch.ipynb)
+mat73==0.65
+scipy==1.17.1
+jupyter

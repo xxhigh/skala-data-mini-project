@@ -1,61 +1,74 @@
-"""MAT 초기 사이클 로딩과 학습 데이터 기준 결측값 대체·표준화."""
+"""데이터 로딩과 전처리 함수 모음."""
 
 import h5py
 import numpy as np
-from scipy.io import loadmat
-from sklearn.impute import SimpleImputer
-from sklearn.pipeline import Pipeline
+from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler
 
+EARLY_CYCLES = 100  # 입력으로 사용하는 초기 사이클 수
 
-def iter_cells(path, fields):
-    """셀 ID, summary, 수명, 전압축, 10·100사이클 Qdlin을 반환한다.
-
-    MATLAB v7.3에서는 필요한 summary와 두 Qdlin 곡선만 읽는다.
-    이전 MAT 형식은 scipy의 simplify_cells로 읽는다.
-    """
-    if h5py.is_hdf5(path):
-        with h5py.File(path, "r") as handle:
-            batch = handle["batch"]
-            summary_refs = batch["summary"][()].reshape(-1)
-            life_refs = batch["cycle_life"][()].reshape(-1)
-            if summary_refs.size != life_refs.size:
-                raise ValueError(f"{path}: summary와 cycle_life의 셀 수가 다릅니다.")
-            for cell_id, (summary_ref, life_ref) in enumerate(zip(summary_refs, life_refs)):
-                group = handle[summary_ref]
-                summary = {field: group[field][()] for field in fields}
-                cycles = handle[batch["cycles"][()].reshape(-1)[cell_id]]
-                q_refs = cycles["Qdlin"][()].reshape(-1)
-                curves = []
-                for index in (9, 99):
-                    ref = q_refs[index] if index < q_refs.size else None
-                    curves.append(handle[ref][()] if ref else None)
-                voltage_ref = batch["Vdlin"][()].reshape(-1)[cell_id]
-                yield (
-                    cell_id, summary, handle[life_ref][()],
-                    handle[voltage_ref][()], *curves,
-                )
-    else:
-        batch = loadmat(path, simplify_cells=True)["batch"]
-        cells = [batch] if isinstance(batch, dict) else np.asarray(batch, dtype=object).ravel()
-        for cell_id, cell in enumerate(cells):
-            summary = {field: cell["summary"][field] for field in fields}
-            cycles = cell["cycles"]
-            if isinstance(cycles, dict):
-                raw = cycles["Qdlin"]
-                curves = [raw[i] if i < len(raw) else None for i in (9, 99)]
-            else:
-                cycles = np.asarray(cycles, dtype=object).reshape(-1)
-                curves = [cycles[i]["Qdlin"] if i < len(cycles) else None for i in (9, 99)]
-            yield cell_id, summary, cell["cycle_life"], cell["Vdlin"], *curves
+# 정상 범위 (초과, 이하). 근거는 tests/check_valid_range.py 로 확인한다.
+# - chargetime: 0은 미측정 값. 가장 느린 정책(3.6C)도 완충에 20분이 안 걸린다.
+#   Batch 1 정상값은 8.8~13.5분이고 그다음 값은 약 419분이다.
+# - Tavg: 0은 미측정 값. Batch 1 정상값은 29.8~34.9도이며 상한에 걸리는 값은 없다.
+VALID_RANGE = {
+    "chargetime": (0, 20),
+    "Tavg": (0, np.inf),
+}
 
 
-def make_preprocessor():
-    """아직 fit하지 않은 전처리 파이프라인을 반환한다.
+def load_cells(path):
+    """MAT 파일에서 셀별 수명, 초기 100사이클 요약값, Q10·Q100 곡선을 읽는다."""
+    cells = []
+    with h5py.File(path, "r") as f:
+        batch = f["batch"]
+        for i in range(batch["summary"].shape[0]):
+            summary = f[batch["summary"][i, 0]]
+            qdlin = f[batch["cycles"][i, 0]]["Qdlin"]
+            cells.append({
+                "cell_id": i,
+                "cycle_life": float(f[batch["cycle_life"][i, 0]][()].ravel()[0]),
+                "chargetime": summary["chargetime"][()].ravel()[:EARLY_CYCLES],
+                "Tavg": summary["Tavg"][()].ravel()[:EARLY_CYCLES],
+                # 계획서 정의: Q10 = cycles[9], Q100 = cycles[99]
+                # Batch 1은 인덱스 0이 빈 사이클이라 실제 9·99번째 사이클을 쓴다.
+                # 두 곡선의 간격은 다른 배치와 같은 90사이클이다.
+                # 한 칸 밀면 인덱스 10의 노이즈 곡선(셀 41 등)을 집게 되어 그대로 둔다.
+                "q10": f[qdlin[9, 0]][()].ravel(),
+                "q100": f[qdlin[99, 0]][()].ravel(),
+            })
+    return cells
 
-    Ridge와 함께 교차검증 파이프라인에 넣어 각 학습 fold에서만 통계량을 계산한다.
-    """
-    return Pipeline([
-        ("imputer", SimpleImputer(strategy="median")),
-        ("scaler", StandardScaler()),
-    ])
+
+def clean_cells(cells):
+    """수명값이 없는 셀을 제외하고, 비정상 측정값을 결측(NaN)으로 바꾼다."""
+    cleaned = []
+    for cell in cells:
+        # 수명(타깃)이 없는 셀 제외. 수명이 짧다는 이유로는 제외하지 않는다.
+        if not np.isfinite(cell["cycle_life"]):
+            continue
+        cell = dict(cell)
+        for key, (low, high) in VALID_RANGE.items():
+            values = cell[key].astype(float)
+            values[(values <= low) | (values > high)] = np.nan
+            cell[key] = values
+        cleaned.append(cell)
+    return cleaned
+
+
+def split_holdout(df, seed=42):
+    """Batch 1을 셀 단위로 Train / Hold-out(Valid) [8:2]으로 나눈다."""
+    return train_test_split(df, test_size=0.2, random_state=seed)
+
+
+def fill_missing(X_train, *others):
+    """Train 기준 중앙값으로 결측값을 대체한다."""
+    median_values = X_train.median()
+    return [X.fillna(median_values) for X in (X_train, *others)]
+
+
+def scale_features(X_train, *others):
+    """Train 기준으로 표준화(StandardScaler)한다."""
+    scaler = StandardScaler()
+    scaler.fit(X_train)
+    return [scaler.transform(X) for X in (X_train, *others)]
