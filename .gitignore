@@ -4,6 +4,9 @@ data/archive
 # 문서 폴더
 docs/
 
+# 결과
+results/
+
 .DS_Store
 
 # Created by https://www.toptal.com/developers/gitignore/api/python

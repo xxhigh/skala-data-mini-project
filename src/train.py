@@ -61,14 +61,22 @@ print(f"Train MAPE : {train_mape:.3f}%")
 print(f"Valid MAPE : {valid_mape:.3f}%")
 print(f"Test  MAPE : {test_mape:.3f}%")
 
-# 성능 결과 저장 (Gap은 양수일수록 뒤 단계에서 성능이 나빠짐)
+# Gap 계산 (양수일수록 뒤 단계에서 성능이 나빠짐)
+gap_train_valid = valid_mape - train_mape
+gap_valid_test = test_mape - valid_mape
+gap_target_test = test_mape - TARGET_MAPE
+
+# 성능 결과 저장 (비고는 Gap의 부호에 맞춰 작성)
 performance = pd.DataFrame([
     ["Train (Batch 1 CV)", train_mape, "5-fold CV 평균"],
     ["Valid (Batch 1 Hold-out)", valid_mape, ""],
     ["Test (Batch 2)", test_mape, ""],
-    ["Gap (Train-Valid)", valid_mape - train_mape, "(+) : 과적합 의심"],
-    ["Gap (Valid-Test)", test_mape - valid_mape, "(+) : 배치간 일반화 저하 의심"],
-    ["Gap (Target-Test)", test_mape - TARGET_MAPE, "Target : 원논문 9.1%"],
+    ["Gap (Train-Valid)", gap_train_valid,
+     "(+) : 과적합 의심" if gap_train_valid > 0 else "(-) : 과적합 신호 없음"],
+    ["Gap (Valid-Test)", gap_valid_test,
+     "(+) : 배치간 일반화 저하 의심" if gap_valid_test > 0 else "(-) : 배치간 일반화 저하 없음"],
+    ["Gap (Target-Test)", gap_target_test,
+     "(+) : 원논문 9.1% 대비 미달" if gap_target_test > 0 else "(-) : 원논문 9.1% 달성"],
 ], columns=["구분", "MAPE (%)", "비고"]).round(3)
 print()
 print(performance.to_string(index=False))
