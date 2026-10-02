@@ -5,7 +5,7 @@ data/archive
 docs/
 
 # 결과
-results/
+results/*.csv
 
 .DS_Store
 
